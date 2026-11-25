@@ -50,6 +50,7 @@ function normalizeCapEntry(entry) {
 const STRATEGY_OPTIONS = [
   { value: "fallback", label: "Fallback — try in order" },
   { value: "round-robin", label: "Round Robin — rotate" },
+  { value: "weighted-round-robin", label: "Weighted Round Robin — proportional to weight" },
   { value: "smart", label: "Smart Router — System One" },
   { value: "fusion", label: "Fusion — panel + judge" },
 ];
@@ -1079,7 +1080,7 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
   );
 }
 
-function ModelItem({ id, index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown, onRemove }) {
+function ModelItem({ id, index, model, weight, onWeightChange, isFirst, isLast, onEdit, onMoveUp, onMoveDown, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -1124,6 +1125,17 @@ function ModelItem({ id, index, model, isFirst, isLast, onEdit, onMoveUp, onMove
 
       {/* Index badge */}
       <span className="text-[10px] font-medium text-text-muted w-3 text-center shrink-0">{index + 1}</span>
+
+      {/* Weight (used by Weighted Round Robin) */}
+      <input
+        type="number"
+        min="1"
+        value={weight}
+        onChange={(e) => onWeightChange(Math.max(1, Number(e.target.value) || 1))}
+        className="w-12 shrink-0 rounded border border-black/10 dark:border-white/10 bg-white dark:bg-black/20 px-1 py-0.5 text-center text-xs outline-none focus:border-primary"
+        title="Weight (Weighted Round Robin only)"
+        aria-label={`Weight for ${model}`}
+      />
 
       {/* Inline editable model value */}
       {editing ? (
@@ -1181,6 +1193,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   // Initialize state with combo values - key prop on parent handles reset on remount
   const [name, setName] = useState(combo?.name || "");
   const [models, setModels] = useState(combo?.models || []);
+  const [weights, setWeights] = useState(() => (combo?.models || []).map((_, i) => Math.max(1, Number(combo.weights?.[i]) || 1)));
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -1192,7 +1205,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   );
 
   // Use stable index-based IDs so duplicates and similar names are handled correctly
-  const modelItems = models.map((model, i) => ({ uid: `item-${i}`, model }));
+  const modelItems = models.map((model, i) => ({ uid: `item-${i}`, model, weight: weights[i] ?? 1 }));
 
   const handleDragEnd = (event) => {
     const { active, over } = event;
@@ -1201,6 +1214,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
       const newIndex = modelItems.findIndex((m) => m.uid === over.id);
       if (oldIndex !== -1 && newIndex !== -1) {
         setModels((prev) => arrayMove(prev, oldIndex, newIndex));
+        setWeights((prev) => arrayMove(prev, oldIndex, newIndex));
       }
     }
   };
@@ -1243,15 +1257,20 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   const handleAddModel = (model) => {
     if (!models.includes(model.value)) {
       setModels([...models, model.value]);
+      setWeights([...weights, 1]);
     }
   };
 
   const handleDeselectModel = (model) => {
-    setModels(models.filter((m) => m !== model.value));
+    const index = models.indexOf(model.value);
+    if (index < 0) return;
+    setModels(models.filter((_, i) => i !== index));
+    setWeights(weights.filter((_, i) => i !== index));
   };
 
   const handleRemoveModel = (index) => {
     setModels(models.filter((_, i) => i !== index));
+    setWeights(weights.filter((_, i) => i !== index));
   };
 
   const handleMoveUp = (index) => {
@@ -1259,6 +1278,9 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
     const newModels = [...models];
     [newModels[index - 1], newModels[index]] = [newModels[index], newModels[index - 1]];
     setModels(newModels);
+    const newWeights = [...weights];
+    [newWeights[index - 1], newWeights[index]] = [newWeights[index], newWeights[index - 1]];
+    setWeights(newWeights);
   };
 
   const handleMoveDown = (index) => {
@@ -1266,12 +1288,15 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
     const newModels = [...models];
     [newModels[index], newModels[index + 1]] = [newModels[index + 1], newModels[index]];
     setModels(newModels);
+    const newWeights = [...weights];
+    [newWeights[index], newWeights[index + 1]] = [newWeights[index + 1], newWeights[index]];
+    setWeights(newWeights);
   };
 
   const handleSave = async () => {
     if (!validateName(name)) return;
     setSaving(true);
-    await onSave({ name: name.trim(), models });
+    await onSave({ name: name.trim(), models, weights });
     setSaving(false);
   };
 
@@ -1312,12 +1337,18 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd} modifiers={[restrictToVerticalAxis, restrictToParentElement]}>
               <SortableContext items={modelItems.map((m) => m.uid)} strategy={verticalListSortingStrategy}>
                 <div className="flex max-h-[55vh] min-w-0 flex-col gap-1 overflow-y-auto sm:max-h-[350px]">
-                  {modelItems.map(({ uid, model }, index) => (
+                  {modelItems.map(({ uid, model, weight }, index) => (
                     <ModelItem
                       key={uid}
                       id={uid}
                       index={index}
                       model={model}
+                      weight={weight}
+                      onWeightChange={(w) => {
+                        const updated = [...weights];
+                        updated[index] = w;
+                        setWeights(updated);
+                      }}
                       isFirst={index === 0}
                       isLast={index === modelItems.length - 1}
                       onEdit={(newVal) => {

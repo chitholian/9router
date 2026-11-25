@@ -9,7 +9,7 @@ import ModelSelectModal from "./ModelSelectModal";
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
 
 // Inline editable model item
-function ModelItem({ index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown, onRemove }) {
+function ModelItem({ index, model, weight, onWeightChange, isFirst, isLast, onEdit, onMoveUp, onMoveDown, onRemove }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(model);
   const commit = () => {
@@ -25,6 +25,10 @@ function ModelItem({ index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown
   return (
     <div className="group flex min-w-0 items-center gap-1.5 rounded-md bg-black/[0.02] px-2 py-1 transition-colors hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04]">
       <span className="text-[10px] font-medium text-text-muted w-3 text-center shrink-0">{index + 1}</span>
+      <input type="number" min="1" value={weight}
+        onChange={(e) => onWeightChange(Math.max(1, Number(e.target.value) || 1))}
+        className="w-12 shrink-0 rounded border border-black/10 dark:border-white/10 bg-white dark:bg-black/20 px-1 py-0.5 text-center text-xs outline-none focus:border-primary"
+        title="Weight (Weighted Round Robin only)" aria-label={`Weight for ${model}`} />
       {editing ? (
         <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={commit} onKeyDown={handleKeyDown}
           className="min-w-0 flex-1 rounded border border-primary/40 bg-white px-1.5 py-0.5 font-mono text-xs text-text-main outline-none dark:bg-black/20" />
@@ -57,6 +61,7 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
     : "";
   const [name, setName] = useState(initialName);
   const [models, setModels] = useState(combo?.models || []);
+  const [weights, setWeights] = useState(() => (combo?.models || []).map((_, i) => Math.max(1, Number(combo.weights?.[i]) || 1)));
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -84,25 +89,36 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
   };
 
   const handleAddModel = (model) => {
-    if (!models.includes(model.value)) setModels([...models, model.value]);
+    if (!models.includes(model.value)) {
+      setModels([...models, model.value]);
+      setWeights([...weights, 1]);
+    }
   };
   const handleDeselectModel = (model) => {
-    setModels(models.filter((m) => m !== model.value));
+    const idx = models.indexOf(model.value);
+    if (idx < 0) return;
+    setModels(models.filter((_, i) => i !== idx));
+    setWeights(weights.filter((_, i) => i !== idx));
   };
-  const handleRemoveModel = (i) => setModels(models.filter((_, idx) => idx !== i));
+  const handleRemoveModel = (i) => {
+    setModels(models.filter((_, idx) => idx !== i));
+    setWeights(weights.filter((_, idx) => idx !== i));
+  };
   const handleMoveUp = (i) => {
     if (i === 0) return;
     const a = [...models]; [a[i - 1], a[i]] = [a[i], a[i - 1]]; setModels(a);
+    const w = [...weights]; [w[i - 1], w[i]] = [w[i], w[i - 1]]; setWeights(w);
   };
   const handleMoveDown = (i) => {
     if (i === models.length - 1) return;
     const a = [...models]; [a[i], a[i + 1]] = [a[i + 1], a[i]]; setModels(a);
+    const w = [...weights]; [w[i], w[i + 1]] = [w[i + 1], w[i]]; setWeights(w);
   };
 
   const handleSave = async () => {
     if (!validateName(name)) return;
     setSaving(true);
-    await onSave({ name: forcePrefix + name.trim(), models });
+    await onSave({ name: forcePrefix + name.trim(), models, weights });
     setSaving(false);
   };
 
@@ -142,6 +158,8 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
               <div className="flex max-h-[55vh] min-w-0 flex-col gap-1 overflow-y-auto sm:max-h-[350px]">
                 {models.map((model, index) => (
                   <ModelItem key={index} index={index} model={model}
+                    weight={weights[index] ?? 1}
+                    onWeightChange={(w) => { const updated = [...weights]; updated[index] = w; setWeights(updated); }}
                     isFirst={index === 0} isLast={index === models.length - 1}
                     onEdit={(v) => { const a = [...models]; a[index] = v; setModels(a); }}
                     onMoveUp={() => handleMoveUp(index)}
@@ -171,11 +189,16 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
           onSelect={handleAddModel} onDeselect={handleDeselectModel}
           onSelectBatch={(items) => {
             const vals = items.map((m) => m?.value || m?.name || m).filter(Boolean);
-            setModels((prev) => [...new Set([...prev, ...vals])]);
+            const toAdd = [...new Set(vals)].filter((v) => !models.includes(v));
+            if (!toAdd.length) return;
+            setModels([...models, ...toAdd]);
+            setWeights([...weights, ...toAdd.map(() => 1)]);
           }}
           onDeselectBatch={(items) => {
             const vals = new Set(items.map((m) => m?.value || m?.name || m).filter(Boolean));
-            setModels((prev) => prev.filter((m) => !vals.has(m)));
+            const kept = models.map((m, i) => ({ m, w: weights[i] ?? 1 })).filter((x) => !vals.has(x.m));
+            setModels(kept.map((x) => x.m));
+            setWeights(kept.map((x) => x.w));
           }}
           activeProviders={activeProviders} modelAliases={modelAliases}
           title="Add Model to Combo" kindFilter={kindFilter}

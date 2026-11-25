@@ -110,6 +110,9 @@ export function reorderByCapabilities(models, required) {
  */
 const comboRotationState = new Map();
 
+// Smooth weighted round-robin state: combo name → current weights per model.
+const comboWeightedState = new Map();
+
 // Trailing run of items after the last assistant/model turn = the current user
 // turn. It may span several messages (e.g. text + image split across blocks),
 // so we return all of them. History media (older turns) must not pin the combo
@@ -224,12 +227,35 @@ function rotateModelsFromIndex(models, currentIndex) {
  * Get rotated model list based on strategy
  * @param {string[]} models - Array of model strings
  * @param {string} comboName - Name of the combo
- * @param {string} strategy - "fallback" or "round-robin"
+ * @param {string} strategy - "fallback", "round-robin" or "weighted-round-robin"
  * @param {number|string} [stickyLimit=1] - Requests per combo model before switching
+ * @param {Object<string, number>} [weights=null] - Model → weight (defaults to 1)
  * @returns {string[]} Rotated models array
  */
-export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
-  if (!models || models.length <= 1 || strategy !== "round-robin") {
+export function getRotatedModels(models, comboName, strategy, stickyLimit = 1, weights = null) {
+  if (!models || models.length <= 1) return models;
+
+  if (strategy === "weighted-round-robin") {
+    // Smooth WRR (nginx-style): add each weight, pick max, subtract the total.
+    // Avoids bursty runs when weights are > 1.
+    const key = comboName || "__default__";
+    const current = comboWeightedState.get(key) || new Map();
+    let total = 0;
+    let picked = 0;
+    let pickedWeight = -Infinity;
+    models.forEach((model, i) => {
+      const weight = Math.max(1, Number(weights?.[model]) || 1);
+      total += weight;
+      const value = (current.get(model) || 0) + weight;
+      current.set(model, value);
+      if (value > pickedWeight) { pickedWeight = value; picked = i; }
+    });
+    current.set(models[picked], pickedWeight - total);
+    comboWeightedState.set(key, current);
+    return rotateModelsFromIndex(models, picked);
+  }
+
+  if (strategy !== "round-robin") {
     return models;
   }
 
@@ -266,9 +292,11 @@ export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
 export function resetComboRotation(comboName) {
   if (comboName) {
     comboRotationState.delete(comboName);
+    comboWeightedState.delete(comboName);
     clearStickyComboSession(comboName);
   } else {
     comboRotationState.clear();
+    comboWeightedState.clear();
     clearStickyComboSession();
   }
 }
@@ -343,6 +371,7 @@ export function isZeroContentResponse(data) {
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
  * @param {string} [options.comboStrategy] - Strategy: "fallback", "round-robin", or "smart"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
+ * @param {Object<string, number>} [options.comboWeights=null] - Model → weight for weighted-round-robin
  * @param {boolean} [options.autoSwitch=true] - Capability auto-switching
  * @param {string|null} [options.sessionId=null] - Client session identifier for prompt cache retention
  * @param {string} [options.smartPolicy="smart"] - Policy: "smart" (adaptive ≥80%), "strict" (lock 1st model), "per-turn", or "custom"
@@ -359,6 +388,7 @@ export async function handleComboChat({
   comboName,
   comboStrategy,
   comboStickyLimit = 1,
+  comboWeights = null,
   autoSwitch = true,
   sessionId = null,
   smartPolicy = "smart",
@@ -448,7 +478,7 @@ export async function handleComboChat({
     }
   } else {
     // Apply rotation strategy if enabled
-    rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+    rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit, comboWeights);
   }
 
   // Auto-switch: float models that satisfy the request's required capabilities to the front.

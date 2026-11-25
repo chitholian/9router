@@ -93,6 +93,17 @@ export async function getComboModels(modelStr) {
   return null;
 }
 
+/**
+ * Get per-model weights for a combo, keyed by model string.
+ * @returns {Object<string, number>|null} null if not a combo
+ */
+export async function getComboWeights(modelStr) {
+  if (modelStr.includes("/")) return null;
+  const combo = await getComboByName(modelStr);
+  if (!combo?.models?.length) return null;
+  return Object.fromEntries(combo.models.map((model, i) => [model, Math.max(1, Number(combo.weights?.[i]) || 1)]));
+}
+
 // A bare `claude-*` id infers provider "anthropic" (API key). When no anthropic
 // connection is active but a Claude OAuth connection is, use "claude" instead of
 // failing with "No active credentials for provider: anthropic" (same idea as the

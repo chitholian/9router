@@ -27,7 +27,21 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    
+    // Capture previous row: used for weight remapping and rotation invalidation.
+    const prev = await getComboById(id);
+    if (body.weights !== undefined) {
+      body.weights = Array.isArray(body.weights)
+        ? body.weights.map((w) => Math.max(1, Number(w) || 1))
+        : [];
+    } else if (body.models !== undefined) {
+      // Remap weights by model identity so reorder/add/remove keeps alignment;
+      // new models default to 1.
+      const byModel = new Map((prev?.models || []).map((m, i) => [m, prev?.weights?.[i]]));
+      body.weights = Array.isArray(body.models)
+        ? body.models.map((m) => Math.max(1, Number(byModel.get(m)) || 1))
+        : [];
+    }
+
     // Validate name format if provided
     if (body.name) {
       if (!VALID_NAME_REGEX.test(body.name)) {
@@ -41,8 +55,6 @@ export async function PUT(request, { params }) {
       }
     }
     
-    // Capture previous name to invalidate rotation state on rename
-    const prev = await getComboById(id);
     const combo = await updateCombo(id, body);
     
     if (!combo) {
